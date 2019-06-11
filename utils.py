@@ -895,12 +895,12 @@ def sample_sheet(G, classes_per_sheet, num_classes, samples_per_class, parallel,
   # loop over total number of sheets
   for i in range(num_classes // classes_per_sheet):
     ims = []
-    y = torch.arange(i * classes_per_sheet, (i + 1) * classes_per_sheet, device='cuda')
+    y = torch.arange(i * classes_per_sheet, (i + 1) * classes_per_sheet, device='cpu')
     for j in range(samples_per_class):
       if (z_ is not None) and hasattr(z_, 'sample_') and classes_per_sheet <= z_.size(0):
         z_.sample_()
       else:
-        z_ = torch.randn(classes_per_sheet, G.dim_z, device='cuda')        
+        z_ = torch.randn(classes_per_sheet, G.dim_z, device='cpu')        
       with torch.no_grad():
         if parallel:
           o = nn.parallel.data_parallel(G, (z_[:classes_per_sheet], G.shared(y)))
@@ -920,16 +920,17 @@ def sample_sheet(G, classes_per_sheet, num_classes, samples_per_class, parallel,
 
 # Interp function; expects x0 and x1 to be of shape (shape0, 1, rest_of_shape..)
 def interp(x0, x1, num_midpoints):
-  lerp = torch.linspace(0.0, 1.0, num_midpoints + 2, device='cuda').to(x0.dtype)
+  lerp = torch.linspace(0.0, 1.0, num_midpoints + 2, device='cpu').to(x0.dtype)
+  # this is where the batch size is coming from i think, num_midpoints + 2
   return ((x0 * (1 - lerp.view(1, -1, 1))) + (x1 * lerp.view(1, -1, 1)))
 
 
 # interp sheet function
 # Supports full, class-wise and intra-class interpolation
-def interp_sheet(G, num_per_sheet, num_midpoints, num_classes, parallel,
+def interp_sheet_ori(G, num_per_sheet, num_midpoints, num_classes, parallel,
                  samples_root, experiment_name, folder_number, sheet_number=0,
-                 fix_z=False, fix_y=False, device='cuda'):
-  return False
+                 fix_z=False, fix_y=False, device='cpu'):
+  #return False
   # Prepare zs and ys
 #   if fix_z: # If fix Z, only sample 1 z per row
 #     zs = torch.randn(num_per_sheet, 1, G.dim_z, device=device)
@@ -955,27 +956,40 @@ def interp_sheet(G, num_per_sheet, num_midpoints, num_classes, parallel,
 #     yss = interp(G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
 #                 G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
 #                 num_midpoints*num_per_sheet + 2*(num_per_sheet-1)).view(num_per_sheet * (num_midpoints + 2), -1)
-  r1 = -4.0
-  r2 = +4.0
-  mean = 0.0
-  scale = 1.0
+  r1 = -30.0
+  r2 = +30.0
+  mean = 10.0
+  scale = 30.0
+
 #   opop = (r1 - r2) * torch.rand(1, 1, G.dim_z, device=device) + r2
   opop = scale*torch.randn(1, 1, G.dim_z, device=device) + mean
   opop = torch.clamp(opop, r1, r2)
 #   roop = (r1 - r2) * torch.rand(1, 1, G.dim_z, device=device) + r2
   roop = scale*torch.randn(1, 1, G.dim_z, device=device) + mean
   roop = torch.clamp(roop, r1, r2)
+
+  interp_style = '' + ('Z' if not fix_z else '') + ('Y' if not fix_y else '')
+
+  image_counter = 0
   for num_sheet in range(num_per_sheet):
       zs = interp(opop,
                 roop,
                 num_midpoints).view(-1, G.dim_z)
       opop = roop
+      #print('zs shape:{}'.format(zs.shape))
 #       roop = (r1 - r2) * torch.rand(1, 1, G.dim_z, device=device) + r2
       roop = scale*torch.randn(1, 1, G.dim_z, device=device) + mean
       roop = torch.clamp(roop, r1, r2)
-      ys = interp(G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
-        G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
+      G = G.to('cpu')
+
+      ys = interp(
+          G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
+          G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
         num_midpoints).view(1 * (num_midpoints + 2), -1)
+
+      
+      #print('ys shape:{}'.format(ys.shape))
+
 #       ys = yss[num_sheet*(num_midpoints+2):(num_sheet+1)*(num_midpoints+2)]
 #       zs = zss[num_sheet*(num_midpoints+2):(num_sheet+1)*(num_midpoints+2)]
 #       import pdb; pdb.set_trace()
@@ -986,13 +1000,74 @@ def interp_sheet(G, num_per_sheet, num_midpoints, num_classes, parallel,
         if parallel:
           out_ims = nn.parallel.data_parallel(G, (zs, ys)).data.cpu()
         else:
-          out_ims = G(zs, ys).data.cpu()
-      interp_style = '' + ('Z' if not fix_z else '') + ('Y' if not fix_y else '')
-      for image_i in range(out_ims.shape[0]):
-        image_filename = '%s/%s/%d/interp%s%d%d.jpg' % (samples_root, experiment_name,
-                                                    folder_number, interp_style,
-                                                    sheet_number, image_i+num_sheet*out_ims.shape[0])
-        torchvision.utils.save_image(out_ims[image_i], image_filename)
+
+          for zs_single, ys_single in zip(zs, ys):
+            zs_single = zs_single.view(1, -1)
+            ys_single = ys_single.view(1, -1)
+            out_ims = G(zs_single, ys_single).data.cpu()
+            
+
+          
+            #print('out_ims shape:{}'.format(out_ims.shape))
+            for image_i in range(out_ims.shape[0]):
+              image_filename = '%s/%s/%d/interp%s%d%d.jpg' % (samples_root, experiment_name,
+                                                          folder_number, interp_style,
+                                                          sheet_number, image_counter)
+              
+              torchvision.utils.save_image(out_ims[image_i], image_filename)
+              array_save_name = '{}/{}/{}/{}{}{}'.format(
+                samples_root, experiment_name, folder_number, interp_style, sheet_number, image_counter)
+              np.save(array_save_name, zs_single)
+
+              image_counter += 1
+
+def interp_sheet(G, num_per_sheet, num_midpoints, num_classes, parallel,
+                 samples_root, experiment_name, folder_number, sheet_number=0,
+                 fix_z=False, fix_y=False, device='cpu'):
+
+  interp_style = '' + ('Z' if not fix_z else '') + ('Y' if not fix_y else '')
+
+  array_names = ['0', '17', '20', '7', '14', '11', '6', '2', '23', '21', '18', '19']
+
+  image_counter = 0
+  file_path = 'C:/Users/Ashwin/Documents/Projects/the_doors_big_gan/samples/psychadelia/1111_backup/ZY0{}.npy'
+  G = G.to('cpu')
+  ys = interp(
+          G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
+          G.shared(sample_1hot(1, num_classes)).view(1, 1, -1),
+        num_midpoints).view(1 * (num_midpoints + 2), -1)
+
+  for idx in range(len(array_names)-1):
+
+    starting_tensor = torch.tensor(np.load(file_path.format(array_names[idx])))
+    ending_tensor = torch.tensor(np.load(file_path.format(array_names[idx+1])))
+
+    zs = interp(
+      starting_tensor,
+      ending_tensor,
+      num_midpoints).view(-1, G.dim_z)
+
+    if G.fp16:
+      zs = zs.half()
+    with torch.no_grad():
+      for zs_single, ys_single in zip(zs, ys):
+        zs_single = zs_single.view(1, -1)
+        ys_single = ys_single.view(1, -1)
+        out_ims = G(zs_single, ys_single).data.cpu()
+
+        for image_i in range(out_ims.shape[0]):
+          image_filename = '%s/%s/%d/interp%s%d%d.jpg' % (samples_root, experiment_name,
+                                                      folder_number, interp_style,
+                                                      sheet_number, image_counter)
+          
+          torchvision.utils.save_image(out_ims[image_i], image_filename)
+          array_save_name = '{}/{}/{}/{}{}{}'.format(
+            samples_root, experiment_name, folder_number, interp_style, sheet_number, image_counter)
+          np.save(array_save_name, zs_single)
+
+          image_counter += 1
+
+
 
 # Convenience debugging function to print out gradnorms and shape from each layer
 # May need to rewrite this so we can actually see which parameter is which
@@ -1088,7 +1163,7 @@ def count_parameters(module):
 
    
 # Convenience function to sample an index, not actually a 1-hot
-def sample_1hot(batch_size, num_classes, device='cuda'):
+def sample_1hot(batch_size, num_classes, device='cpu'):
   return torch.randint(low=0, high=num_classes, size=(batch_size,),
           device=device, dtype=torch.int64, requires_grad=False)
 
@@ -1127,7 +1202,7 @@ class Distribution(torch.Tensor):
 
 
 # Convenience function to prepare a z and y vector
-def prepare_z_y(G_batch_size, dim_z, nclasses, device='cuda', 
+def prepare_z_y(G_batch_size, dim_z, nclasses, device='cpu', 
                 fp16=False,z_var=1.0):
   z_ = Distribution(torch.randn(G_batch_size, dim_z, requires_grad=False))
   z_.init_distribution('normal', mean=0, var=z_var)

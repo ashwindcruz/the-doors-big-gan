@@ -49,13 +49,14 @@ def run(config):
   device = 'cuda'
   
   # Seed RNG
-  utils.seed_rng(config['seed'])
+  #utils.seed_rng(config['seed']) # Commented out to get variety between runs
    
   # Setup cudnn.benchmark for free speed
   torch.backends.cudnn.benchmark = True
   
   # Import the model--this line allows us to dynamically select different files.
   model = __import__(config['model'])
+  
   experiment_name = (config['experiment_name'] if config['experiment_name']
                        else utils.name_from_config(config))
   print('Experiment name is %s' % experiment_name)
@@ -128,7 +129,7 @@ def run(config):
                          experiment_name=experiment_name,
                          folder_number=config['sample_sheet_folder_num'], 
                          sheet_number=0,
-                         fix_z=fix_z, fix_y=fix_y, device='cuda')
+                         fix_z=fix_z, fix_y=fix_y, device='cpu')
   # Sample random sheet
   if config['sample_random']:
     print('Preparing random sample sheet...')
